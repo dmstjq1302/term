@@ -1,0 +1,99 @@
+import tkinter as tk
+
+def update_display(*args):
+    selected_currency = from_var.get()
+    symbol = currency_symbols.get(selected_currency, "")
+    currency_symbol_label.config(text=symbol)
+
+    amount_str = amount_var.get()
+    formatted_text = format_korean_currency(amount_str, symbol)
+    result_label.config(text=formatted_text)
+
+
+def format_korean_currency(amount_str, symbol):
+    try:
+        num = int(amount_str)
+        num_len = len(str(num))
+    except (ValueError, TypeError):
+        return ""
+
+    if num == 0:
+        return ""
+
+    if num_len > 12:
+        unit = '조'
+        main_num = num // 1000000000000
+        rest_num = num % 1000000000000
+        if rest_num > 0:
+            return f"{main_num}{unit} {format_korean_currency(str(rest_num), symbol)}"
+        else:
+            return f"{main_num}{unit} {symbol}"
+    elif num_len > 8:
+        unit = '억'
+        main_num = num // 100000000
+        rest_num = num % 100000000
+        if rest_num > 0:
+            return f"{main_num}{unit} {format_korean_currency(str(rest_num), symbol)}"
+        else:
+            return f"{main_num}{unit} {symbol}"
+    elif num_len > 4:
+        unit = '만'
+        main_num = num // 10000
+        rest_num = num % 10000
+        if rest_num > 0:
+            return f"{main_num}{unit} {rest_num:,} {symbol}"
+        else:
+            return f"{main_num}{unit} {symbol}"
+    else: # '만' 미만
+        return f"{num:,} {symbol}"
+
+
+window = tk.Tk()
+window.title("환율 계산기")
+window.geometry("430x300")
+
+api_data = {
+    'USD': '미국 달러', 'KRW': '대한민국 원', 'JPY': '일본 엔',
+    'EUR': '유로', 'CNY': '중국 위안'
+}
+currency_symbols = {
+    'USD (미국 달러)': '$', 'KRW (대한민국 원)': '원', 'JPY (일본 엔)': '¥',
+    'EUR (유로)': '€', 'CNY (중국 위안)': '¥'
+}
+currency_list = [f"{code} ({name})" for code, name in api_data.items()]
+
+amount_var = tk.StringVar(window)
+amount_var.trace("w", update_display)
+
+input_frame = tk.Frame(window)
+input_frame.grid(row=0, column=0, columnspan=3, pady=20)
+
+amount_entry = tk.Entry(input_frame, font=("Arial", 14), width=20, justify="right", textvariable=amount_var)
+amount_entry.pack(side="left", padx=5)
+
+currency_symbol_label = tk.Label(input_frame, text="$", font=("Arial", 14), width=3)
+currency_symbol_label.pack(side="left")
+
+from_var = tk.StringVar(window)
+from_var.trace("w", update_display)
+from_var.set(currency_list[0])
+from_dropdown = tk.OptionMenu(window, from_var, *currency_list)
+from_dropdown.config(font=("Arial", 12), width=15)
+from_dropdown.grid(row=2, column=0, padx=10)
+
+arrow_label = tk.Label(window, text="→", font=("Arial", 14))
+arrow_label.grid(row=2, column=1)
+
+to_var = tk.StringVar(window)
+to_var.set(currency_list[1])
+to_dropdown = tk.OptionMenu(window, to_var, *currency_list)
+to_dropdown.config(font=("Arial", 12), width=15)
+to_dropdown.grid(row=2, column=2, padx=10)
+
+convert_button = tk.Button(window, text="환율 변환", font=("Arial", 12))
+convert_button.grid(row=3, column=0, columnspan=3, pady=20)
+
+result_label = tk.Label(window, text="", font=("Arial", 12), fg="gray")
+result_label.grid(row=1, column=0, columnspan=3, pady=10)
+
+window.mainloop()
