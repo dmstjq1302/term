@@ -1,0 +1,179 @@
+import tkinter as tk
+import requests
+from PIL import Image, ImageTk
+
+
+def get_exchange_rates():
+    """API 서버에 접속해서 최신 환율 정보를 가져오는 함수"""
+    url = "https://open.er-api.com/v6/latest/KRW"
+    try:
+        response = requests.get(url)
+        data = response.json()
+        if data["result"] == "success":
+            global exchange_rates
+            exchange_rates = data["rates"]
+            print("최신 환율 정보를 성공적으로 가져왔습니다.")
+    except Exception as e:
+        print("API 접속 오류:", e)
+
+
+def perform_conversion():
+    """'환율 변환' 버튼을 눌렀을 때 실제 계산을 수행하는 함수"""
+    # (이전 코드와 동일)
+    amount_str = amount_var.get().replace(',', '')
+    if not amount_str: return
+    try:
+        amount = float(amount_str)
+    except ValueError:
+        final_result_label.config(text="유효한 숫자를 입력하세요.")
+        return
+    if not exchange_rates:
+        final_result_label.config(text="환율 정보를 가져올 수 없습니다.")
+        return
+    from_code = from_var.get()
+    to_code = to_var.get()
+    try:
+        from_rate = exchange_rates[from_code]
+        to_rate = exchange_rates[to_code]
+        converted_amount = (amount / from_rate) * to_rate
+        to_symbol = currency_data[to_code]['symbol']
+        result_text = f"{converted_amount:,.2f} {to_symbol}"
+        final_result_label.config(text=result_text)
+    except KeyError:
+        final_result_label.config(text="환율 정보 없음")
+
+
+def update_display(*args):
+    """입력 내용이나 선택이 바뀔 때마다 UI를 실시간으로 업데이트하는 함수"""
+    # 'From' 섹션 업데이트
+    from_code = from_var.get()
+    if from_code in currency_data:
+        data = currency_data[from_code]
+        from_flag_label.config(image=tk_flag_images[from_code])
+        from_country_label.config(text=data['name'])
+        from_code_label.config(text=from_code)
+
+        amount_str = amount_var.get().replace(',', '')
+        formatted_text = format_korean_currency(amount_str, data['symbol'])
+        from_formatted_label.config(text=formatted_text)
+
+    # 'To' 섹션 업데이트 (동일한 로직)
+    to_code = to_var.get()
+    if to_code in currency_data:
+        data = currency_data[to_code]
+        to_flag_label.config(image=tk_flag_images[to_code])
+        to_country_label.config(text=data['name'])
+        to_code_label.config(text=to_code)
+        # 여기에 변환된 금액을 표시하는 로직 추가 가능
+
+
+def format_korean_currency(amount_str, symbol):
+    """숫자를 한글 단위로 변환하는 함수"""
+    try:
+        num = int(amount_str)
+        num_len = len(str(num))
+    except (ValueError, TypeError):
+        return ""
+    if num == 0: return ""
+    if num_len > 8:
+        return f"{num // 100000000}억 {num % 100000000:,} {symbol}"
+    elif num_len > 4:
+        return f"{num // 10000}만 {num % 10000:,} {symbol}"
+    else:
+        return f"{num:,} {symbol}"
+
+
+# 데이터 준비
+exchange_rates = {}
+currency_data = {
+    'USD': {'name': '미국', 'symbol': '달러', 'flag': 'image/us.png'},
+    'KRW': {'name': '대한민국', 'symbol': '원', 'flag': 'image/kr.png'},
+    'JPY': {'name': '일본', 'symbol': '엔', 'flag': 'image/jp.png'},
+    'EUR': {'name': '유로존', 'symbol': '유로', 'flag': 'image/eur.png'},
+    'CNY': {'name': '중국', 'symbol': '위안', 'flag': 'image/cn.png'}
+}
+currency_codes = list(currency_data.keys())  # ['USD', 'KRW', ...]
+
+# GUI 창 설정
+window = tk.Tk()
+window.title("환율 변환기")
+window.geometry("500x450")
+window.config(bg="white")
+
+# 이미지 로드
+tk_flag_images = {}
+for code, data in currency_data.items():
+    try:
+        img = Image.open(data['flag']).resize((40, 26))
+        tk_flag_images[code] = ImageTk.PhotoImage(img)
+    except FileNotFoundError:
+        print(f"이미지 파일 없음: {data['flag']}")
+
+# 변수 선언
+amount_var = tk.StringVar(window, value="1")
+from_var = tk.StringVar(window, value='USD')
+to_var = tk.StringVar(window, value='KRW')
+amount_var.trace("w", update_display)
+from_var.trace("w", update_display)
+to_var.trace("w", update_display)
+
+# 'From' 통화 위젯 프레임
+from_frame = tk.Frame(window, bg="white", highlightbackground="#E0E0E0", highlightthickness=1)
+from_frame.pack(pady=(20, 5), padx=20, fill="x")
+
+# 국기, 국가이름, 통화코드, 드롭다운을 담을 왼쪽 프레임
+from_left_frame = tk.Frame(from_frame, bg="white")
+from_left_frame.pack(side="left", padx=10, pady=10)
+
+from_flag_label = tk.Label(from_left_frame, bg="white")
+from_flag_label.pack()
+from_country_label = tk.Label(from_left_frame, text="미국", bg="white", font=("Arial", 12, "bold"))
+from_country_label.pack()
+from_code_label = tk.Label(from_left_frame, text="USD", bg="white", font=("Arial", 10), fg="gray")
+from_code_label.pack()
+
+# 드롭다운 메뉴
+from_dropdown = tk.OptionMenu(from_left_frame, from_var, *currency_codes)
+from_dropdown.config(bg="white", relief="flat", highlightthickness=0, width=0, borderwidth=0)
+from_dropdown.pack()
+
+# 세로 구분선
+separator1 = tk.Frame(from_frame, bg="#E0E0E0", width=1)
+separator1.pack(side="left", fill="y", pady=10)
+
+# 금액 입력창과 한글 단위 라벨을 담을 오른쪽 프레임
+from_right_frame = tk.Frame(from_frame, bg="white")
+from_right_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+
+amount_entry = tk.Entry(from_right_frame, textvariable=amount_var, font=("Arial", 20, "bold"),
+                        justify="right", relief="flat", bg="white")
+amount_entry.pack(fill="x")
+from_formatted_label = tk.Label(from_right_frame, text="", font=("Arial", 10), fg="gray",
+                                bg="white", anchor="e")
+from_formatted_label.pack(fill="x")
+
+# 'To' 통화 위젯 프레임 (From과 동일한 구조)
+to_frame = tk.Frame(window, bg="white", highlightbackground="#E0E0E0", highlightthickness=1)
+to_frame.pack(pady=5, padx=20, fill="x")
+to_left_frame = tk.Frame(to_frame, bg="white");
+to_left_frame.pack(side="left", padx=10, pady=10)
+to_flag_label = tk.Label(to_left_frame, bg="white");
+to_flag_label.pack()
+to_country_label = tk.Label(to_left_frame, text="대한민국", bg="white", font=("Arial", 12, "bold"));
+to_country_label.pack()
+to_code_label = tk.Label(to_left_frame, text="KRW", bg="white", font=("Arial", 10), fg="gray");
+to_code_label.pack()
+to_dropdown = tk.OptionMenu(to_left_frame, to_var, *currency_codes);
+to_dropdown.config(bg="white", relief="flat", highlightthickness=0, width=0, borderwidth=0);
+to_dropdown.pack()
+
+# 변환 버튼 및 결과 라벨
+convert_button = tk.Button(window, text="환율 변환", font=("Arial", 12, "bold"), command=perform_conversion)
+convert_button.pack(pady=20)
+final_result_label = tk.Label(window, text="", font=("Arial", 16, "bold"), fg="blue", bg="white")
+final_result_label.pack(pady=10)
+
+# 프로그램 시작
+get_exchange_rates()
+update_display()
+window.mainloop()
