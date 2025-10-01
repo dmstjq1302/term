@@ -1,0 +1,204 @@
+import tkinter as tk
+import requests
+from PIL import Image, ImageTk
+
+# --- 함수 정의 ---
+
+def get_exchange_rates():
+    """API 서버에 접속해서 최신 환율 정보를 가져오는 함수"""
+    url = "https://open.er-api.com/v6/latest/KRW"
+    try:
+        response = requests.get(url)
+        data = response.json()
+        if data["result"] == "success":
+            global exchange_rates
+            exchange_rates = data["rates"]
+            print("최신 환율 정보를 성공적으로 가져왔습니다.")
+            update_display() # 성공 시 디스플레이 업데이트
+    except Exception as e:
+        print("API 접속 오류:", e)
+
+def update_display(*args):
+    """입력 내용이나 선택이 바뀔 때마다 UI를 실시간으로 업데이트하고 계산하는 함수"""
+    # 'From' 섹션 UI 업데이트
+    from_code = from_var.get()
+    if from_code in currency_data:
+        data = currency_data[from_code]
+        from_flag_label.config(image=tk_flag_images.get(from_code))
+        from_country_label.config(text=data['name'])
+        from_code_label.config(text=from_code)
+        amount_str = amount_var.get().replace(',', '')
+        formatted_text = format_korean_currency(amount_str, data['symbol'])
+        from_formatted_label.config(text=formatted_text)
+
+    # 'To' 섹션 UI 업데이트
+    to_code = to_var.get()
+    if to_code in currency_data:
+        data = currency_data[to_code]
+        to_flag_label.config(image=tk_flag_images.get(to_code))
+        to_country_label.config(text=data['name'])
+        to_code_label.config(text=to_code)
+
+    # 실시간 환율 계산
+    amount_str_no_comma = amount_var.get().replace(',', '')
+    if not amount_str_no_comma or not exchange_rates:
+        to_amount_label.config(text="")
+        to_formatted_label.config(text="")
+        return
+    try:
+        amount = float(amount_str_no_comma)
+        from_rate = exchange_rates[from_code]
+        to_rate = exchange_rates[to_code]
+        converted_amount = (amount / from_rate) * to_rate
+        to_amount_label.config(text=f"{converted_amount:,.2f}")
+        to_formatted_label.config(text=format_korean_currency(str(converted_amount), currency_data[to_code]['symbol']))
+    except (ValueError, KeyError):
+        to_amount_label.config(text="계산 불가")
+        to_formatted_label.config(text="")
+
+def format_korean_currency(amount_str, symbol):
+    """숫자를 한글 단위로 변환하는 함수"""
+    try:
+        num = int(float(amount_str))
+        num_len = len(str(num))
+    except (ValueError, TypeError): return ""
+    if num == 0: return ""
+    if num_len > 8: return f"{num // 100000000}억 {num % 100000000:,} {symbol}"
+    elif num_len > 4: return f"{num // 10000}만 {num % 10000:,} {symbol}"
+    else: return f"{num:,} {symbol}"
+
+def show_page(page_name):
+    """지정된 페이지만 보여주고, 메뉴 버튼 스타일을 업데이트하는 함수"""
+    for name, items in menu_items.items():
+        button = items['button']
+        underline = items['underline']
+        page = items['page']
+
+        if name == page_name:
+            # 선택된 메뉴: 검은색, 굵은 글씨, 밑줄 표시
+            button.config(fg="black", font=("맑은 고딕", 12, "bold"))
+            underline.pack(fill="x", padx=10, pady=(0, 5))
+            page.tkraise()
+        else:
+            # (수정) 선택되지 않은 메뉴: 회색, 굵은 글씨, 밑줄 숨김
+            button.config(fg="gray", font=("맑은 고딕", 12, "bold"))
+            underline.pack_forget()
+
+
+# --- 데이터 ---
+exchange_rates = {}
+currency_data = {
+    'USD': {'name': '미국', 'symbol': '달러', 'flag': 'image/us.png'},
+    'KRW': {'name': '대한민국', 'symbol': '원', 'flag': 'image/kr.png'},
+    'JPY': {'name': '일본', 'symbol': '엔', 'flag': 'image/jp.png'},
+    'EUR': {'name': '유로존', 'symbol': '유로', 'flag': 'image/eur.png'},
+    'CNY': {'name': '중국', 'symbol': '위안', 'flag': 'image/cn.png'}
+}
+currency_codes = list(currency_data.keys())
+
+# --- GUI 창 설정 ---
+window = tk.Tk()
+window.title("실시간 환율 정보")
+window.geometry("850x650")
+window.config(bg="white")
+
+# --- 이미지 로드 ---
+tk_flag_images = {}
+for code, data in currency_data.items():
+    try:
+        img = Image.open(data['flag']).resize((40, 26))
+        tk_flag_images[code] = ImageTk.PhotoImage(img)
+    except FileNotFoundError:
+        print(f"이미지 파일 없음: {data['flag']}")
+
+# --- 변수 선언 ---
+amount_var = tk.StringVar(window, value="1")
+from_var = tk.StringVar(window, value='USD')
+to_var = tk.StringVar(window, value='KRW')
+amount_var.trace("w", update_display)
+from_var.trace("w", update_display)
+to_var.trace("w", update_display)
+
+# --- 레이아웃 구조 생성 ---
+
+#사이드바와 구분선을 담을 컨테이너 프레임
+sidebar_container = tk.Frame(window)
+sidebar_container.pack(side="left", fill="y")
+
+# 왼쪽 사이드바 프레임
+sidebar_frame = tk.Frame(sidebar_container, bg="#F5F5F5", width=150)
+sidebar_frame.pack(side="left", fill="y")
+sidebar_frame.pack_propagate(False)
+
+# 사이드바 오른쪽 세로 구분선
+sidebar_separator = tk.Frame(sidebar_container, bg="#D0D0D0", width=1)
+sidebar_separator.pack(side="right", fill="y")
+
+# 오른쪽 메인 콘텐츠 프레임
+content_frame = tk.Frame(window, bg="white")
+content_frame.pack(side="right", fill="both", expand=True)
+content_frame.grid_rowconfigure(0, weight=1)
+content_frame.grid_columnconfigure(0, weight=1)
+
+# --- 페이지 1: 환율 변환 페이지 ---
+exchange_page = tk.Frame(content_frame, bg="white")
+exchange_page.grid(row=0, column=0, sticky="nsew")
+
+converter_frame = tk.Frame(exchange_page, bg="white"); converter_frame.pack(anchor="nw", pady=20, padx=20)
+from_frame = tk.Frame(converter_frame, bg="white", highlightbackground="#E0E0E0", highlightthickness=1); from_frame.pack(pady=(0, 10), fill="x")
+from_left_frame = tk.Frame(from_frame, bg="white", width=150, height=120); from_left_frame.pack_propagate(False); from_left_frame.pack(side="left", padx=10, pady=10)
+from_left_frame.grid_rowconfigure((0, 1, 2, 3), weight=1); from_left_frame.grid_columnconfigure(0, weight=1)
+from_flag_label = tk.Label(from_left_frame, bg="white"); from_flag_label.grid(row=0, column=0)
+from_country_label = tk.Label(from_left_frame, text="미국", bg="white", font=("맑은 고딕", 12, "bold")); from_country_label.grid(row=1, column=0)
+from_code_label = tk.Label(from_left_frame, text="USD", bg="white", font=("맑은 고딕", 10), fg="gray"); from_code_label.grid(row=2, column=0)
+from_dropdown = tk.OptionMenu(from_left_frame, from_var, *currency_codes); from_dropdown.config(bg="white", relief="flat", highlightthickness=0, width=5, borderwidth=0, indicatoron=True); from_dropdown.grid(row=3, column=0)
+separator1 = tk.Frame(from_frame, bg="#E0E0E0", width=1); separator1.pack(side="left", fill="y", pady=10)
+from_right_frame = tk.Frame(from_frame, bg="white"); from_right_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+amount_entry = tk.Entry(from_right_frame, textvariable=amount_var, font=("맑은 고딕", 20, "bold"), justify="right", relief="flat", bg="white"); amount_entry.pack(fill="x", expand=True)
+from_formatted_label = tk.Label(from_right_frame, text="", font=("맑은 고딕", 10), fg="gray", bg="white", anchor="e"); from_formatted_label.pack(fill="x")
+to_frame = tk.Frame(converter_frame, bg="white", highlightbackground="#E0E0E0", highlightthickness=1); to_frame.pack(pady=5, fill="x")
+to_left_frame = tk.Frame(to_frame, bg="white", width=150, height=120); to_left_frame.pack_propagate(False); to_left_frame.pack(side="left", padx=10, pady=10)
+to_left_frame.grid_rowconfigure((0, 1, 2, 3), weight=1); to_left_frame.grid_columnconfigure(0, weight=1)
+to_flag_label = tk.Label(to_left_frame, bg="white"); to_flag_label.grid(row=0, column=0)
+to_country_label = tk.Label(to_left_frame, text="대한민국", bg="white", font=("맑은 고딕", 12, "bold")); to_country_label.grid(row=1, column=0)
+to_code_label = tk.Label(to_left_frame, text="KRW", bg="white", font=("맑은 고딕", 10), fg="gray"); to_code_label.grid(row=2, column=0)
+to_dropdown = tk.OptionMenu(to_left_frame, to_var, *currency_codes); to_dropdown.config(bg="white", relief="flat", highlightthickness=0, width=5, borderwidth=0, indicatoron=True); to_dropdown.grid(row=3, column=0)
+separator2 = tk.Frame(to_frame, bg="#E0E0E0", width=1); separator2.pack(side="left", fill="y", pady=10)
+to_right_frame = tk.Frame(to_frame, bg="white"); to_right_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+to_amount_label = tk.Label(to_right_frame, text="", font=("맑은 고딕", 20, "bold"), bg="white", anchor="e"); to_amount_label.pack(fill="x", expand=True)
+to_formatted_label = tk.Label(to_right_frame, text="", font=("맑은 고딕", 10), fg="gray", bg="white", anchor="e"); to_formatted_label.pack(fill="x")
+graph_frame = tk.Frame(exchange_page, bg="#F5F5F5"); graph_frame.pack(fill="both", expand=True, padx=20, pady=(10, 20))
+graph_label = tk.Label(graph_frame, text="과거 환율 변동 그래프가 여기에 표시됩니다.", font=("맑은 고딕", 16), bg="#F5F5F5"); graph_label.pack(expand=True)
+
+# --- 페이지 2: 환율 포커스 페이지 ---
+focus_page = tk.Frame(content_frame, bg="white")
+focus_page.grid(row=0, column=0, sticky="nsew")
+focus_title_label = tk.Label(focus_page, text="환율 포커스", font=("맑은 고딕", 24, "bold"), bg="white")
+focus_title_label.pack(pady=50)
+
+# --- 사이드바 메뉴 버튼 생성 ---
+menu_items = {}
+
+exchange_menu_item = tk.Frame(sidebar_frame, bg="#F5F5F5")
+exchange_menu_item.pack(pady=(20, 5), padx=10, fill="x")
+btn_exchange = tk.Button(exchange_menu_item, text="환율", font=("맑은 고딕", 12, "bold"),
+                         relief="flat", bg="#F5F5F5", activebackground="#E0E0E0",
+                         command=lambda: show_page("exchange"))
+btn_exchange.pack()
+underline_exchange = tk.Frame(exchange_menu_item, height=2, bg="black")
+menu_items['exchange'] = {'button': btn_exchange, 'underline': underline_exchange, 'page': exchange_page}
+
+focus_menu_item = tk.Frame(sidebar_frame, bg="#F5F5F5")
+focus_menu_item.pack(pady=5, padx=10, fill="x")
+btn_focus = tk.Button(focus_menu_item, text="환율 포커스", font=("맑은 고딕", 12, "bold"),
+                      relief="flat", bg="#F5F5F5", activebackground="#E0E0E0",
+                      command=lambda: show_page("focus"))
+btn_focus.pack()
+underline_focus = tk.Frame(focus_menu_item, height=2, bg="black")
+menu_items['focus'] = {'button': btn_focus, 'underline': underline_focus, 'page': focus_page}
+
+# --- 프로그램 시작 ---
+show_page("exchange")
+get_exchange_rates()
+window.mainloop()
+
