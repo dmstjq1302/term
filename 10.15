@@ -1,0 +1,385 @@
+# --- 라이브러리 임포트 ---
+import tkinter as tk
+import requests
+from PIL import Image, ImageTk
+from datetime import datetime, timedelta
+import matplotlib
+
+matplotlib.use("TkAgg")  # Tkinter 백엔드로 Matplotlib 설정
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib.dates as mdates
+from matplotlib.ticker import MaxNLocator
+
+
+# --- 함수 정의 ---
+
+def get_exchange_rates():
+    """(API 연동) 실시간 환율 정보를 API 서버에서 가져와 전역 변수에 저장합니다."""
+    url = "https://open.er-api.com/v6/latest/KRW"
+    try:
+        response = requests.get(url)
+        data = response.json()
+        if data["result"] == "success":
+            global exchange_rates
+            exchange_rates = data["rates"]
+            print("최신 환율 정보를 성공적으로 가져왔습니다.")
+            update_all_displays()  # 정보 로딩 후 화면 전체 업데이트
+    except Exception as e:
+        print("API 접속 오류:", e)
+
+
+def get_historical_data(base_currency, target_currency, days=30):
+    """(API 연동) 지정된 기간의 과거 환율 데이터를 API 서버에서 가져옵니다."""
+    today = datetime.now()
+    start_day = today - timedelta(days=days)
+    start_date = start_day.strftime('%Y-%m-%d')
+    url = f"https://api.frankfurter.app/{start_date}..?from={base_currency}&to={target_currency}"
+    try:
+        response = requests.get(url)
+        data = response.json()
+        if 'rates' in data:
+            dates_str = sorted(data['rates'].keys())
+            dates = [datetime.strptime(d, '%Y-%m-%d') for d in dates_str]
+            rates = [data['rates'][d][target_currency] for d in dates_str]
+            return dates, rates
+    except Exception as e:
+        print("과거 데이터 API 접속 오류:", e)
+    return None, None
+
+
+def draw_graph(dates, rates, base_code):
+    """(그래프) Matplotlib를 사용해 환율 변동 그래프를 그려 UI에 표시합니다."""
+    # 이전에 그려진 위젯이 있다면 모두 삭제
+    for widget in graph_content_frame.winfo_children():
+        widget.destroy()
+
+    if not dates or not rates or len(rates) < 2:
+        error_label = tk.Label(graph_content_frame, text="그래프 데이터를 표시할 수 없습니다.", font=("맑은 고딕", 16), bg="white")
+        error_label.pack(expand=True)
+        return
+
+    # 1. 차트 헤더 (국기, 이름, 현재가, 등락률) 생성
+    header_frame = tk.Frame(graph_content_frame, bg="white")
+    header_frame.pack(fill="x", padx=10, pady=(10, 0))
+
+    flag_img = tk_flag_images.get(base_code)
+    if flag_img:
+        tk.Label(header_frame, image=flag_img, bg="white").pack(side="left")
+
+    tk.Label(header_frame, text=f"{currency_data[base_code]['name']} {base_code}", font=("맑은 고딕", 12, "bold"),
+             bg="white").pack(side="left", padx=(5, 10))
+
+    current_rate = rates[-1]
+    prev_rate = rates[-2]
+    change = current_rate - prev_rate
+    change_percent = (change / prev_rate) * 100
+
+    tk.Label(header_frame, text=f"{current_rate:,.2f}", font=("맑은 고딕", 20, "bold"), bg="white").pack(side="left")
+
+    change_color = "red" if change < 0 else "blue"
+    change_symbol = "▼" if change < 0 else "▲"
+    tk.Label(header_frame, text=f"{change_symbol} {change:,.2f} ({change_percent:.2f}%)", font=("맑은 고딕", 10),
+             bg="white", fg=change_color).pack(side="left", pady=(5, 0))
+
+    # 2. 기간 선택 버튼 (1개월, 3개월, 1년) 생성
+    button_frame = tk.Frame(graph_content_frame, bg="white")
+    button_frame.pack(fill="x", padx=10)
+    periods = {"1개월": 30, "3개월": 90, "1년": 365}
+    for text, days in periods.items():
+        btn = tk.Button(button_frame, text=text, font=("맑은 고딕", 9), relief="flat", bg="white",
+                        command=lambda d=days: update_chart_by_period(d))
+        btn.pack(side="left")
+
+    # 3. 메인 그래프 생성 및 스타일링
+    fig = Figure(figsize=(5, 3), dpi=100, facecolor="white")
+    ax = fig.add_subplot(111)
+
+    ax.plot(dates, rates, color='royalblue', linewidth=1.5)
+    ax.fill_between(dates, rates, color='royalblue', alpha=0.1)
+
+    max_rate = max(rates)
+    min_rate = min(rates)
+    max_date = dates[rates.index(max_rate)]
+    min_date = dates[rates.index(min_rate)]
+    ax.annotate(f'최고 {max_rate:,.2f}', xy=(max_date, max_rate), xytext=(max_date, max_rate + (max_rate * 0.005)),
+                arrowprops=dict(facecolor='black', shrink=0.05, width=0.5, headwidth=4), fontsize=8)
+    ax.annotate(f'최저 {min_rate:,.2f}', xy=(min_date, min_rate), xytext=(min_date, min_rate - (max_rate * 0.005)),
+                arrowprops=dict(facecolor='black', shrink=0.05, width=0.5, headwidth=4), fontsize=8)
+
+    padding = (max_rate - min_rate) * 0.1
+    ax.set_ylim(min_rate - padding, max_rate + padding)
+    ax.set_facecolor("white")
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.grid(True, linestyle='--', alpha=0.6)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+    fig.tight_layout()
+
+    # 4. Matplotlib 그래프를 Tkinter 위젯으로 변환하여 삽입
+    canvas = FigureCanvasTkAgg(fig, master=graph_content_frame)
+    canvas.draw()
+    canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+
+def update_chart_by_period(days=30):
+    """(그래프) 기간 선택에 맞춰 그래프만 새로 그립니다."""
+    base_code = graph_currency_codes[current_graph_index]
+    dates, rates = get_historical_data(base_code, 'KRW', days)
+    draw_graph(dates, rates, base_code)
+
+
+def show_next_graph():
+    """(그래프) 오른쪽 화살표 클릭 시 다음 국가 그래프를 보여줍니다."""
+    global current_graph_index
+    current_graph_index = (current_graph_index + 1) % len(graph_currency_codes)
+    update_chart_by_period()
+
+
+def show_prev_graph():
+    """(그래프) 왼쪽 화살표 클릭 시 이전 국가 그래프를 보여줍니다."""
+    global current_graph_index
+    current_graph_index = (current_graph_index - 1 + len(graph_currency_codes)) % len(graph_currency_codes)
+    update_chart_by_period()
+
+
+def update_conversion_display(*args):
+    """(업데이트 - 가벼운 작업) 금액 입력 시 환율 텍스트만 실시간으로 업데이트합니다."""
+    # 'From' 섹션의 국기, 이름, 한글 단위 텍스트 업데이트
+    from_code = from_var.get()
+    if from_code in currency_data:
+        data = currency_data[from_code]
+        from_flag_label.config(image=tk_flag_images.get(from_code))
+        from_country_label.config(text=data['name'])
+        from_code_label.config(text=from_code)
+        amount_str = amount_var.get().replace(',', '')
+        from_formatted_label.config(text=format_korean_currency(amount_str, data['symbol']))
+
+    # 'To' 섹션의 국기, 이름 텍스트 업데이트
+    to_code = to_var.get()
+    if to_code in currency_data:
+        data = currency_data[to_code]
+        to_flag_label.config(image=tk_flag_images.get(to_code))
+        to_country_label.config(text=data['name'])
+        to_code_label.config(text=to_code)
+
+    # 실시간 환율 계산 및 'To' 섹션 금액 업데이트
+    amount_str_no_comma = amount_var.get().replace(',', '')
+    if not amount_str_no_comma or not exchange_rates:
+        to_amount_label.config(text="")
+        to_formatted_label.config(text="")
+        return
+    try:
+        amount = float(amount_str_no_comma)
+        from_rate = exchange_rates.get(from_code, 0)
+        to_rate = exchange_rates.get(to_code, 0)
+        if from_rate == 0:
+            raise KeyError
+        converted_amount = (amount / from_rate) * to_rate
+        to_amount_label.config(text=f"{converted_amount:,.2f}")
+        to_formatted_label.config(text=format_korean_currency(str(converted_amount), currency_data[to_code]['symbol']))
+    except (ValueError, KeyError):
+        to_amount_label.config(text="계산 불가")
+        to_formatted_label.config(text="")
+
+
+def update_all_displays(*args):
+    """(업데이트 - 무거운 작업) 국가 변경 시 텍스트와 그래프를 모두 업데이트합니다."""
+    update_conversion_display()  # 먼저 텍스트를 업데이트하고
+    from_code = from_var.get()
+    if from_code in graph_currency_codes:
+        global current_graph_index
+        current_graph_index = graph_currency_codes.index(from_code)
+        update_chart_by_period()
+
+
+def format_korean_currency(amount_str, symbol):
+    """(유틸리티) 숫자를 'x억 x만 x' 형태의 한글 단위로 변환합니다."""
+    try:
+        num = int(float(amount_str))
+    except (ValueError, TypeError):
+        return ""
+    if num == 0:
+        return ""
+
+    # 더 정확한 계산을 위해 숫자 길이 대신 값으로 비교
+    if num >= 100000000:
+        return f"{num // 100000000}억 {num % 100000000:,} {symbol}"
+    elif num >= 10000:
+        return f"{num // 10000}만 {num % 10000:,} {symbol}"
+    else:
+        return f"{num:,} {symbol}"
+
+
+def show_page(page_name):
+    """(페이지 관리) 지정된 페이지만 보여주고, 메뉴 버튼 스타일을 업데이트합니다."""
+    for name, items in menu_items.items():
+        button = items['button']
+        underline = items['underline']
+        page = items['page']
+
+        if name == page_name:
+            button.config(fg="black")
+            underline.pack(fill="x", padx=10, pady=(0, 5))
+            page.tkraise()
+        else:
+            button.config(fg="gray")
+            underline.pack_forget()
+
+
+def create_currency_frame(parent, tk_var):
+    """(UI 생성) 중복되는 'From'/'To' 프레임 UI를 생성하는 함수."""
+    frame = tk.Frame(parent, bg="white", highlightbackground="#E0E0E0", highlightthickness=1)
+
+    left_frame = tk.Frame(frame, bg="white", width=150, height=120)
+    left_frame.pack_propagate(False)
+    left_frame.pack(side="left", padx=10, pady=10)
+
+    left_frame.grid_rowconfigure(list(range(4)), weight=1)
+    left_frame.grid_columnconfigure(0, weight=1)
+
+    flag_label = tk.Label(left_frame, bg="white")
+    flag_label.grid(row=0, column=0)
+    country_label = tk.Label(left_frame, text="", bg="white", font=("맑은 고딕", 12, "bold"))
+    country_label.grid(row=1, column=0)
+    code_label = tk.Label(left_frame, text="", bg="white", font=("맑은 고딕", 10), fg="gray")
+    code_label.grid(row=2, column=0)
+    dropdown = tk.OptionMenu(left_frame, tk_var, *currency_codes)
+    dropdown.config(bg="white", relief="flat", highlightthickness=0, width=5, borderwidth=0, indicatoron=True)
+    dropdown.grid(row=3, column=0)
+
+    separator = tk.Frame(frame, bg="#E0E0E0", width=1)
+    separator.pack(side="left", fill="y", pady=10)
+
+    right_frame = tk.Frame(frame, bg="white")
+    right_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+
+    # 각 프레임에 필요한 위젯들을 딕셔너리로 묶어서 반환
+    return frame, {'flag': flag_label, 'country': country_label, 'code': code_label, 'right': right_frame}
+
+
+# --- 전역 변수 및 데이터 ---
+exchange_rates = {}
+currency_data = {
+    'USD': {'name': '미국', 'symbol': '달러', 'flag': 'image/us.png'},
+    'KRW': {'name': '대한민국', 'symbol': '원', 'flag': 'image/kr.png'},
+    'JPY': {'name': '일본', 'symbol': '엔', 'flag': 'image/jp.png'},
+    'EUR': {'name': '유로존', 'symbol': '유로', 'flag': 'image/eur.png'},
+    'CNY': {'name': '중국', 'symbol': '위안', 'flag': 'image/cn.png'}
+}
+currency_codes = list(currency_data.keys())
+graph_currency_codes = ['USD', 'JPY', 'EUR', 'CNY']
+current_graph_index = 0
+
+# --- GUI 창 설정 ---
+window = tk.Tk()
+window.title("실시간 환율 정보")
+window.geometry("850x700")
+window.config(bg="white")
+
+# --- 이미지 로드 ---
+tk_flag_images = {}
+for code, data in currency_data.items():
+    try:
+        img = Image.open(data['flag']).resize((40, 26))
+        tk_flag_images[code] = ImageTk.PhotoImage(img)
+    except FileNotFoundError:
+        print(f"이미지 파일 없음: {data['flag']}")
+
+# --- Tkinter 변수 선언 ---
+amount_var = tk.StringVar(window, value="1")
+from_var = tk.StringVar(window, value='USD')
+to_var = tk.StringVar(window, value='KRW')
+
+# --- 레이아웃 구조 생성 ---
+sidebar_container = tk.Frame(window)
+sidebar_container.pack(side="left", fill="y")
+sidebar_frame = tk.Frame(sidebar_container, bg="#F5F5F5", width=150)
+sidebar_frame.pack(side="left", fill="y")
+sidebar_frame.pack_propagate(False)
+sidebar_separator = tk.Frame(sidebar_container, bg="#D0D0D0", width=1)
+sidebar_separator.pack(side="right", fill="y")
+
+content_frame = tk.Frame(window, bg="white")
+content_frame.pack(side="right", fill="both", expand=True)
+content_frame.grid_rowconfigure(0, weight=1)
+content_frame.grid_columnconfigure(0, weight=1)
+
+# --- 페이지 1: 환율 변환 페이지 ---
+exchange_page = tk.Frame(content_frame, bg="white")
+exchange_page.grid(row=0, column=0, sticky="nsew")
+
+converter_frame = tk.Frame(exchange_page, bg="white")
+converter_frame.pack(anchor="nw", pady=20, padx=20)
+
+# create_currency_frame 함수를 사용하여 'From' 프레임 생성
+from_frame, from_widgets = create_currency_frame(converter_frame, from_var)
+from_frame.pack(pady=(0, 10), fill="x")
+from_flag_label = from_widgets['flag']
+from_country_label = from_widgets['country']
+from_code_label = from_widgets['code']
+amount_entry = tk.Entry(from_widgets['right'], textvariable=amount_var, font=("맑은 고딕", 20, "bold"), justify="right",
+                        relief="flat", bg="white")
+amount_entry.pack(fill="x", expand=True)
+from_formatted_label = tk.Label(from_widgets['right'], text="", font=("맑은 고딕", 10), fg="gray", bg="white", anchor="e")
+from_formatted_label.pack(fill="x")
+
+# create_currency_frame 함수를 사용하여 'To' 프레임 생성
+to_frame, to_widgets = create_currency_frame(converter_frame, to_var)
+to_frame.pack(pady=5, fill="x")
+to_flag_label = to_widgets['flag']
+to_country_label = to_widgets['country']
+to_code_label = to_widgets['code']
+to_amount_label = tk.Label(to_widgets['right'], text="", font=("맑은 고딕", 20, "bold"), bg="white", anchor="e")
+to_amount_label.pack(fill="x", expand=True)
+to_formatted_label = tk.Label(to_widgets['right'], text="", font=("맑은 고딕", 10), fg="gray", bg="white", anchor="e")
+to_formatted_label.pack(fill="x")
+
+# 그래프 영역 레이아웃
+graph_container_frame = tk.Frame(exchange_page, bg="white")
+graph_container_frame.pack(anchor="nw", padx=20, pady=(10, 20))
+prev_button = tk.Button(graph_container_frame, text="◀", font=("Arial", 12), relief="flat", bg="white",
+                        command=show_prev_graph)
+prev_button.pack(side="left", fill="y")
+graph_content_frame = tk.Frame(graph_container_frame, bg="white")
+graph_content_frame.pack(side="left", fill="both", expand=True)
+next_button = tk.Button(graph_container_frame, text="▶", font=("Arial", 12), relief="flat", bg="white",
+                        command=show_next_graph)
+next_button.pack(side="right", fill="y")
+
+# --- 페이지 2: 환율 포커스 페이지 ---
+focus_page = tk.Frame(content_frame, bg="white")
+focus_page.grid(row=0, column=0, sticky="nsew")
+focus_title_label = tk.Label(focus_page, text="환율 포커스", font=("맑은 고딕", 24, "bold"), bg="white")
+focus_title_label.pack(pady=50)
+
+# --- 사이드바 메뉴 버튼 생성 ---
+menu_items = {}
+exchange_menu_item = tk.Frame(sidebar_frame, bg="#F5F5F5")
+exchange_menu_item.pack(pady=(20, 5), padx=10, fill="x")
+btn_exchange = tk.Button(exchange_menu_item, text="환율", font=("맑은 고딕", 12, "bold"), relief="flat", bg="#F5F5F5",
+                         activebackground="#E0E0E0", command=lambda: show_page("exchange"))
+btn_exchange.pack()
+underline_exchange = tk.Frame(exchange_menu_item, height=2, bg="black")
+menu_items['exchange'] = {'button': btn_exchange, 'underline': underline_exchange, 'page': exchange_page}
+
+focus_menu_item = tk.Frame(sidebar_frame, bg="#F5F5F5")
+focus_menu_item.pack(pady=5, padx=10, fill="x")
+btn_focus = tk.Button(focus_menu_item, text="환율 포커스", font=("맑은 고딕", 12, "bold"), relief="flat", bg="#F5F5F5",
+                      activebackground="#E0E0E0", command=lambda: show_page("focus"))
+btn_focus.pack()
+underline_focus = tk.Frame(focus_menu_item, height=2, bg="black")
+menu_items['focus'] = {'button': btn_focus, 'underline': underline_focus, 'page': focus_page}
+
+# --- 프로그램 시작 ---
+
+# 변수 변경 감지(trace)는 모든 UI 위젯이 생성된 후에 설정
+amount_var.trace("w", update_conversion_display)
+from_var.trace("w", update_all_displays)
+to_var.trace("w", update_all_displays)
+
+show_page("exchange")
+get_exchange_rates()
+window.mainloop()
+
