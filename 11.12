@@ -1,0 +1,458 @@
+# --- 라이브러리 임포트 ---
+import tkinter as tk
+from tkinter import messagebox
+import requests
+from bs4 import BeautifulSoup
+import webbrowser
+import threading
+from PIL import Image, ImageTk
+from datetime import datetime, timedelta
+import matplotlib
+matplotlib.rcParams['font.family'] = 'Malgun Gothic'
+matplotlib.use("TkAgg")
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib.dates as mdates
+from matplotlib.ticker import MaxNLocator
+
+# --- 1. 모든 함수 정의 (최상단 배치) ---
+
+def check_alerts():
+    """(알림) 현재 환율을 확인하고, 설정된 알림 조건이 맞으면 팝업을 띄웁니다."""
+    if not exchange_rates: return
+    triggered_alerts = []
+    for alert in list(user_alerts):
+        try:
+            current_rate = 1 / exchange_rates.get(alert['code'], 0)
+            if current_rate == 0: continue
+            condition_met = False
+            if alert['op'] == '>' and current_rate > alert['value']: condition_met = True
+            elif alert['op'] == '<' and current_rate < alert['value']: condition_met = True
+            if condition_met:
+                msg = f"환율 알림!\n\n{alert['code']} 환율이 설정하신 {alert['value']}원 {alert['op']} 도달했습니다.\n\n현재 환율: {current_rate:,.2f}원"
+                messagebox.showinfo("환율 변동 알림", msg)
+                triggered_alerts.append(alert)
+        except Exception as e: print(f"알림 확인 중 오류: {e}")
+    for alert in triggered_alerts:
+        if alert in user_alerts:
+            user_alerts.remove(alert)
+    if exchange_page.winfo_viewable(): update_alert_list_ui()
+
+def add_alert():
+    """(알림) 새 알림을 추가합니다."""
+    code = alert_currency_var.get()
+    op = alert_op_var.get()
+    value_str = alert_value_entry.get()
+    try:
+        value = float(value_str)
+        if value <= 0: raise ValueError
+    except ValueError:
+        messagebox.showwarning("입력 오류", "목표 환율은 0보다 큰 숫자로 입력해야 합니다.")
+        return
+    new_alert = {'code': code, 'op': op, 'value': value}
+    user_alerts.append(new_alert)
+    print(f"알림 추가됨: {new_alert}")
+    alert_value_entry.delete(0, tk.END)
+    update_alert_list_ui()
+
+def remove_alert(alert_to_remove):
+    """(알림) 알림 목록에서 특정 알림을 제거합니다."""
+    global user_alerts
+    user_alerts = [alert for alert in user_alerts if alert != alert_to_remove]
+    update_alert_list_ui()
+
+def update_alert_list_ui():
+    """(알림) '환율' 페이지의 알림 목록 UI를 새로고침합니다."""
+    if 'alert_list_frame' in globals():
+        for widget in alert_list_frame.winfo_children(): widget.destroy()
+        if not user_alerts:
+            tk.Label(alert_list_frame, text="현재 설정된 알림이 없습니다.", font=("맑은 고딕", 12), bg="white", fg="gray").pack(pady=5)
+        else:
+            for alert in user_alerts:
+                alert_frame = tk.Frame(alert_list_frame, bg="#F0F0F0")
+                alert_text = f"{alert['code']} 환율이 {alert['value']}원 {alert['op']} 일 때 알림"
+                tk.Label(alert_frame, text=alert_text, font=("맑은 고딕", 11), bg="#F0F0F0", fg="black").pack(side="left", padx=10, pady=5)
+                tk.Button(alert_frame, text="X", font=("Arial", 10, "bold"), fg="red", relief="flat", bg="#F0F0F0",
+                          command=lambda a=alert: remove_alert(a)).pack(side="right", padx=5)
+                alert_frame.pack(fill="x", pady=2)
+
+def get_ai_summary(headlines):
+    """(AI 기능) Gemini API를 호출하여 뉴스 헤드라인 목록을 요약합니다."""
+    api_key = "AIzaSyDWY_TkkNE4rQiy4rfh0mzNDAeh3-fvYDg" # ⚠️ 여기에 본인의 Gemini API 키를 붙여넣으세요.
+    if not api_key: return "AI 요약 기능이 비활성화되어 있습니다. (API 키가 필요합니다)"
+    system_prompt = ("당신은 세계 경제, 특히 외환 시장을 전문으로 하는 수석 경제 분석가입니다. "
+                     "당신의 임무는 대한민국 원화(KRW) 환율에 초점을 맞춰, 다음 뉴스 헤드라인 목록을 분석하는 것입니다. "
+                     "이 헤드라인들을 바탕으로 현재 환율 상황(상승, 하락, 변동성 등)과 주요 원인을 "
+                     "한국어로 3~4문장의 간결한 전문가 요약 브리핑으로 작성해 주세요.")
+    headlines_text = "\n".join([f"- {h['title']}" for h in headlines])
+    user_prompt = f"최신 환율 뉴스 헤드라인:\n{headlines_text}\n\n위 헤드라인을 바탕으로 환율 동향을 요약해 주세요."
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key={api_key}"
+    payload = {"contents": [{"parts": [{"text": user_prompt}]}], "systemInstruction": {"parts": [{"text": system_prompt}]}}
+    try:
+        response = requests.post(api_url, json=payload, headers={'Content-Type': 'application/json'}, timeout=20)
+        response.raise_for_status(); result = response.json(); summary = result['candidates'][0]['content']['parts'][0]['text']
+        return summary
+    except requests.exceptions.RequestException as e: print(f"Gemini API 접속 오류: {e}"); return "오류: AI 요약 서버에 접속할 수 없습니다. (인터넷 연결 또는 API 키를 확인하세요)"
+    except KeyError: print(f"Gemini API 응답 파싱 오류"); return "오류: AI 요약 응답을 처리할 수 없습니다."
+    except Exception as e: print(f"AI 요약 중 알 수 없는 오류: {e}"); return "오류: AI 요약 중 문제가 발생했습니다."
+
+def update_ai_summary_thread(headlines):
+    """(스레드) AI 요약을 별도 스레드에서 실행하고, 완료되면 UI를 업데이트합니다."""
+    summary = get_ai_summary(headlines)
+    window.after(0, lambda: ai_summary_label.config(text=summary))
+
+def get_news_headlines(page_num=1):
+    """(웹 크롤링) KITA 웹사이트에서 뉴스 제목, 링크, 날짜, 총 건수를 가져옵니다."""
+    url = f"https://www.kita.net/cmmrcInfo/ehgtNews/ehgtNewsList.do?pageIndex={page_num}"
+    news_list = []; total_news_count = 0
+    try:
+        response = requests.get(url, timeout=10); response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        summary_div = soup.find("div", class_="bbs-summary");
+        if summary_div and summary_div.find("strong"):
+            try: total_news_count = int(summary_div.find("strong").text.replace(',', ''))
+            except ValueError: print("총 뉴스 개수 파싱 오류")
+        news_ul = soup.find("ul", class_="board-list");
+        if not news_ul: print("뉴스 목록(ul)을 찾을 수 없습니다."); return [], 0
+        for item in news_ul.find_all("li"):
+            subject_div = item.find("div", class_="subject"); info_div = item.find("div", class_="info"); date_text = ""
+            if info_div:
+                date_span = info_div.find("span", class_="date")
+                if date_span: date_text = date_span.text.strip()
+            if subject_div:
+                link_tag = subject_div.find("a")
+                if link_tag and link_tag.has_attr('onclick'):
+                    onclick_attr = link_tag['onclick']
+                    try:
+                        params = onclick_attr.split('(')[1].split(')')[0].replace("'", "").split(','); classification = params[0].strip(); no = params[1].strip()
+                        link = f"https://www.kita.net/cmmrcInfo/ehgtNews/ehgtNewsDetail.do?classification={classification}&no={no}"; title = link_tag.text.strip()
+                        if title: news_list.append({'title': title, 'link': link, 'date': date_text})
+                    except IndexError: print("onclick 속성 파싱 오류:", onclick_attr)
+    except requests.exceptions.RequestException as e: print(f"뉴스 페이지 접속 오류: {e}")
+    except Exception as e: print(f"뉴스 파싱 중 오류 발생: {e}")
+    return news_list[:15], total_news_count
+
+def open_news_link(url):
+    """(유틸리티) 주어진 URL 주소를 웹 브라우저에서 엽니다."""
+    try: webbrowser.open(url, new=2)
+    except Exception as e: print(f"링크 열기 오류: {e}")
+
+def on_news_enter(e, label):
+    """마우스가 뉴스 제목 위로 올라갔을 때 폰트를 굵고 크게 변경"""
+    label.config(font=("맑은 고딕", 14, "bold"), fg="#1E90FF")
+def on_news_leave(e, label):
+    """마우스가 뉴스 제목을 떠났을 때 폰트를 원래대로 복원"""
+    label.config(font=("맑은 고딕", 13), fg="black")
+
+def populate_focus_page(page_num=1):
+    """'환율 포커스' 페이지에 표 형식의 뉴스 목록 (날짜, 구분선, 호버 포함)을 생성합니다."""
+    for widget in focus_scrollable_frame.winfo_children(): widget.destroy()
+    global current_news_page, total_news_pages; current_news_page = page_num
+    if page_num == 1: ai_summary_label.config(text="AI가 최신 뉴스를 분석 중입니다...")
+    else: ai_summary_label.config(text="AI 요약은 첫 페이지만 지원됩니다.")
+    news_headlines, total_count = get_news_headlines(page_num)
+    total_news_pages = (total_count + 9) // 10 if total_count > 0 else 1
+    total_count_label.config(text=f"총 {total_count:,} 건")
+    if not news_headlines:
+        tk.Label(focus_scrollable_frame, text="최신 환율 뉴스를\n불러올 수 없습니다.", font=("맑은 고딕", 16), bg="white", fg="black").pack(pady=28)
+        page_info_label.config(text=f"페이지 {current_news_page} / {total_news_pages}")
+        prev_news_button.config(state=tk.DISABLED); next_news_button.config(state=tk.DISABLED)
+        ai_summary_label.config(text="뉴스를 불러올 수 없어 요약에 실패했습니다.")
+        return
+    for i, news in enumerate(news_headlines):
+        title = news['title']; link = news['link']; date = news['date']
+        item_frame = tk.Frame(focus_scrollable_frame, bg="white", height=60); item_frame.pack(fill="x", padx=0); item_frame.pack_propagate(False) # 높이 60px로 설정
+        item_frame.grid_columnconfigure(0, weight=1); item_frame.grid_columnconfigure(1, weight=0); item_frame.grid_rowconfigure(0, weight=1)
+        title_label = tk.Label(item_frame, text=title, font=("맑은 고딕", 13), bg="white", fg="black", cursor="hand2", anchor="w", wraplength=900)
+        title_label.grid(row=0, column=0, sticky="nsew", padx=14)
+        date_label = tk.Label(item_frame, text=date, font=("맑은 고딕", 12), fg="gray", bg="white", anchor="e")
+        date_label.grid(row=0, column=1, sticky="nsew", padx=14)
+        title_label.bind("<Button-1>", lambda e, url=link: open_news_link(url)); title_label.bind("<Enter>", lambda e, lbl=title_label: on_news_enter(e, lbl)); title_label.bind("<Leave>", lambda e, lbl=title_label: on_news_leave(e, lbl))
+        if i < len(news_headlines) - 1: tk.Frame(focus_scrollable_frame, height=1, bg="#F0F0F0").pack(fill="x", padx=0)
+    page_info_label.config(text=f"페이지 {current_news_page} / {total_news_pages}")
+    prev_news_button.config(state=tk.NORMAL if current_news_page > 1 else tk.DISABLED)
+    next_news_button.config(state=tk.NORMAL if current_news_page < total_news_pages else tk.DISABLED)
+    if page_num == 1 and news_headlines:
+        threading.Thread(target=update_ai_summary_thread, args=(news_headlines,), daemon=True).start()
+
+def show_next_news_page():
+    if current_news_page < total_news_pages: populate_focus_page(current_news_page + 1)
+def show_prev_news_page():
+    if current_news_page > 1: populate_focus_page(current_news_page - 1)
+
+def fetch_all_data_and_check_alerts():
+    """(백그라운드) 모든 API 데이터를 가져오고 알림을 확인하는 스레드 함수"""
+    print(f"[{datetime.now():%H:%M:%S}] 백그라운드 업데이트 시작...")
+    try:
+        url_today = "https://open.er-api.com/v6/latest/KRW"
+        response_today = requests.get(url_today, timeout=10); data_today = response_today.json()
+        if data_today.get("result") == "success":
+            global exchange_rates; exchange_rates = data_today["rates"]
+            print(f"[{datetime.now():%H:%M:%S}] 백그라운드: 최신 환율 로드 성공.")
+            yesterday = datetime.now() - timedelta(days=1); date_str = yesterday.strftime('%Y-%m-%d')
+            url_yesterday = f"https://api.frankfurter.app/{date_str}?from=KRW"
+            response_yesterday = requests.get(url_yesterday, timeout=10); data_yesterday = response_yesterday.json()
+            if 'rates' in data_yesterday:
+                global yesterday_exchange_rates; yesterday_exchange_rates = {code: 1 / rate for code, rate in data_yesterday.get('rates', {}).items() if rate != 0}
+                yesterday_exchange_rates['KRW'] = 1.0; print(f"[{datetime.now():%H:%M:%S}] 백그라운드: 어제 환율 로드 성공.")
+            window.after(0, update_ui_and_check_alerts)
+    except Exception as e:
+        print(f"[{datetime.now():%H:%M:%S}] 주기적 업데이트 중 오류: {e}")
+    finally:
+        window.after(ALERT_CHECK_INTERVAL, periodic_update)
+
+def periodic_update():
+    """(백그라운드) 10분마다 주기적으로 환율 확인 스레드를 실행합니다."""
+    threading.Thread(target=fetch_all_data_and_check_alerts, daemon=True).start()
+
+def update_ui_and_check_alerts():
+    """(업데이트) 데이터 로딩 완료 후, 메인 스레드에서 UI 업데이트와 알림 확인을 수행"""
+    if exchange_page.winfo_viewable():
+        print("환율 페이지 UI 업데이트 및 알림 확인 중...")
+        update_all_displays()
+        populate_rate_list()
+        update_alert_list_ui()
+    check_alerts()
+
+def populate_rate_list():
+    """(환율 시세표) 오른쪽 패널에 목록을 생성하는 함수"""
+    if 'rate_list_scrollable_frame' not in globals(): return
+    for widget in rate_list_scrollable_frame.winfo_children(): widget.destroy()
+    if not exchange_rates:
+        tk.Label(rate_list_scrollable_frame, text="환율 정보를\n불러오는 중...", bg="white", font=("맑은 고딕", 16), fg="black").pack(pady=28); return
+    show_change = bool(yesterday_exchange_rates); focus_currencies = ['USD', 'JPY', 'EUR', 'CNY', 'GBP', 'AUD', 'CAD', 'CHF']
+    for code in focus_currencies:
+        if code not in exchange_rates: continue
+        today_rate_vs_krw = 1 / exchange_rates[code]
+        row_frame = tk.Frame(rate_list_scrollable_frame, bg="white"); row_frame.pack(fill="x", pady=7, padx=14)
+        left_frame = tk.Frame(row_frame, bg="white"); left_frame.pack(side="left")
+        tk.Label(left_frame, image=tk_flag_images.get(f"{code}_small"), bg="white").pack(side="left", padx=(0, 14))
+        name_frame = tk.Frame(left_frame, bg="white"); name_frame.pack(side="left")
+        tk.Label(name_frame, text=f"{currency_data[code]['name']} {code}", font=("맑은 고딕", 14, "bold"), bg="white", fg="black", anchor="w").pack(fill="x")
+        tk.Label(name_frame, text=f"{datetime.now():%m.%d. %H:%M} 실시간", font=("맑은 고딕", 12), fg="gray", bg="white", anchor="w").pack(fill="x")
+        right_frame = tk.Frame(row_frame, bg="white"); right_frame.pack(side="right")
+        rate_change_frame = tk.Frame(right_frame, bg="white"); rate_change_frame.pack(anchor="e")
+        tk.Label(rate_change_frame, text=f"{today_rate_vs_krw:,.2f}", font=("맑은 고딕", 14, "bold"), bg="white", fg="black").pack(side="left")
+        if show_change:
+            yesterday_rate_vs_krw = yesterday_exchange_rates.get(code, today_rate_vs_krw)
+            change = today_rate_vs_krw - yesterday_rate_vs_krw; percent_change = (change / yesterday_rate_vs_krw) * 100 if yesterday_rate_vs_krw != 0 else 0
+            change_color = "red" if change >= 0 else "blue"; change_symbol = "▲" if change >= 0 else "▼"; percent_bg = "#FFE6E6" if change >= 0 else "#E6F0FF"; percent_fg = "red" if change >= 0 else "blue"
+            percent_label = tk.Label(rate_change_frame, text=f"{percent_change: >.2f}%", font=("맑은 고딕", 12, "bold"), bg=percent_bg, fg=percent_fg, padx=6, pady=2)
+            percent_label.pack(side="left", padx=(14, 0))
+            tk.Label(right_frame, text=f"{change_symbol} {abs(change):.2f}", font=("맑은 고딕", 12), fg=change_color, bg="white").pack(anchor="e")
+        tk.Frame(rate_list_scrollable_frame, height=1, bg="#F0F0F0").pack(fill="x", padx=14)
+
+def get_historical_data(base_currency, target_currency, days=30):
+    today = datetime.now(); start_day = today - timedelta(days=days); start_date = start_day.strftime('%Y-%m-%d')
+    url = f"https://api.frankfurter.app/{start_date}..?from={base_currency}&to={target_currency}"
+    try:
+        response = requests.get(url, timeout=10); data = response.json()
+        if 'rates' in data:
+            dates_str = sorted(data['rates'].keys())
+            dates_str_filtered = dates_str[-days:]
+            dates = [datetime.strptime(d, '%Y-%m-%d') for d in dates_str_filtered]
+            rates = [data['rates'][d][target_currency] for d in dates_str_filtered]
+            if dates_str_filtered and dates_str_filtered[-1] != today.strftime('%Y-%m-%d') and (base_currency in exchange_rates and target_currency in exchange_rates):
+                today_rate = exchange_rates[target_currency] / exchange_rates[base_currency]
+                dates.append(today)
+                rates.append(today_rate)
+            return dates, rates
+    except Exception as e: print(f"과거 데이터 API 접속 오류: {e}")
+    return None, None
+def draw_graph(dates, rates, base_code):
+    if 'graph_content_frame' not in globals(): return
+    for widget in graph_content_frame.winfo_children(): widget.destroy()
+    if not dates or not rates or len(rates) < 2:
+        tk.Label(graph_content_frame, text="그래프 데이터를 표시할 수 없습니다.", font=("맑은 고딕", 18), bg="white", fg="black").pack(expand=True); return
+    header_frame = tk.Frame(graph_content_frame, bg="white"); header_frame.pack(fill="x", padx=12, pady=(12, 0))
+    flag_img = tk_flag_images.get(base_code);
+    if flag_img: tk.Label(header_frame, image=flag_img, bg="white").pack(side="left")
+    tk.Label(header_frame, text=f"{currency_data[base_code]['name']} {base_code}", font=("맑은 고딕", 14, "bold"), bg="white", fg="black").pack(side="left", padx=(6, 12))
+    current_rate = rates[-1]; prev_rate = rates[-2]; change = current_rate - prev_rate; change_percent = (change / prev_rate) * 100
+    tk.Label(header_frame, text=f"{current_rate:,.2f}", font=("맑은 고딕", 24, "bold"), bg="white", fg="black").pack(side="left")
+    change_color = "red" if change >= 0 else "blue"; change_symbol = "▲" if change >= 0 else "▼"
+    tk.Label(header_frame, text=f"{change_symbol} {change:,.2f} ({change_percent:.2f}%)", font=("맑은 고딕", 12), bg="white", fg=change_color).pack(side="left", pady=(6, 0))
+    button_frame = tk.Frame(graph_content_frame, bg="white"); button_frame.pack(fill="x", padx=12, pady=(6, 0))
+    periods = {"1개월": 30, "3개월": 90, "1년": 365}
+    for text, days in periods.items():
+        btn = tk.Button(button_frame, text=text, font=("맑은 고딕", 11), relief="flat", bg="white", fg="black", command=lambda d=days: update_chart_by_period(d)); btn.pack(side="left", padx=4)
+    fig = Figure(figsize=(6, 3.6), dpi=100, facecolor="white"); ax = fig.add_subplot(111)
+    ax.plot(dates, rates, color='royalblue', linewidth=1.8); ax.fill_between(dates, rates, color='royalblue', alpha=0.1)
+    max_rate = max(rates); min_rate = min(rates); max_date = dates[rates.index(max_rate)]; min_date = dates[rates.index(min_rate)]
+    ax.annotate(f'최고 {max_rate:,.2f}', xy=(max_date, max_rate), xytext=(max_date, max_rate + (max_rate * 0.005)), arrowprops=dict(facecolor='black', shrink=0.05, width=0.5, headwidth=4), fontsize=10, color='black')
+    ax.annotate(f'최저 {min_rate:,.2f}', xy=(min_date, min_rate), xytext=(min_date, min_rate - (max_rate * 0.005)), arrowprops=dict(facecolor='black', shrink=0.05, width=0.5, headwidth=4), fontsize=10, color='black')
+    padding = (max_rate - min_rate) * 0.1; ax.set_ylim(min_rate - padding, max_rate + padding)
+    ax.set_facecolor("white"); ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
+    ax.spines['bottom'].set_color('black'); ax.spines['left'].set_color('black'); ax.tick_params(colors='black')
+    ax.grid(True, linestyle='--', alpha=0.6, color="#E0E0E0"); ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d')); fig.tight_layout()
+    canvas = FigureCanvasTkAgg(fig, master=graph_content_frame); canvas.draw(); canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
+def update_chart_by_period(days=30):
+    base_code = graph_currency_codes[current_graph_index]; dates, rates = get_historical_data(base_code, 'KRW', days); draw_graph(dates, rates, base_code)
+def show_next_graph():
+    global current_graph_index; current_graph_index = (current_graph_index + 1) % len(graph_currency_codes); update_chart_by_period(30)
+def show_prev_graph():
+    global current_graph_index; current_graph_index = (current_graph_index - 1 + len(graph_currency_codes)) % len(graph_currency_codes); update_chart_by_period(30)
+def update_conversion_display(*args):
+    from_code = from_var.get()
+    if from_code in currency_data:
+        data = currency_data[from_code]; from_flag_label.config(image=tk_flag_images.get(from_code)); from_country_label.config(text=data['name']); from_code_label.config(text=from_code)
+        amount_str = amount_var.get().replace(',', ''); from_formatted_label.config(text=format_korean_currency(amount_str, data['symbol']))
+    to_code = to_var.get()
+    if to_code in currency_data:
+        data = currency_data[to_code]; to_flag_label.config(image=tk_flag_images.get(to_code)); to_country_label.config(text=data['name']); to_code_label.config(text=to_code)
+    amount_str_no_comma = amount_var.get().replace(',', '')
+    if not amount_str_no_comma or not exchange_rates: to_amount_label.config(text=""); to_formatted_label.config(text=""); return
+    try:
+        amount = float(amount_str_no_comma); from_rate = exchange_rates.get(from_code, 0); to_rate = exchange_rates.get(to_code, 0)
+        if from_rate == 0: raise KeyError
+        converted_amount = (amount / from_rate) * to_rate
+        to_amount_label.config(text=f"{converted_amount:,.2f}"); to_formatted_label.config(text=format_korean_currency(str(converted_amount), currency_data[to_code]['symbol']))
+    except (ValueError, KeyError): to_amount_label.config(text="계산 불가"); to_formatted_label.config(text="")
+def update_all_displays(*args):
+    update_conversion_display()
+    from_code = from_var.get()
+    if from_code in graph_currency_codes:
+        global current_graph_index; current_graph_index = graph_currency_codes.index(from_code); update_chart_by_period(30)
+def format_korean_currency(amount_str, symbol):
+    try: num = int(float(amount_str))
+    except (ValueError, TypeError): return ""
+    if num == 0: return ""
+    if num >= 100000000: return f"{num // 100000000}억 {num % 100000000:,} {symbol}"
+    elif num >= 10000: return f"{num // 10000}만 {num % 10000:,} {symbol}"
+    else: return f"{num:,} {symbol}"
+def show_page(page_name):
+    for name, items in menu_items.items():
+        button = items['button']; underline = items['underline']; page = items['page']
+        if name == page_name:
+            button.config(fg="black", bg="#F5F5F5"); underline.pack(fill="x", padx=14, pady=(0, 7)); page.tkraise()
+        else:
+            button.config(fg="gray", bg="#F5F5F5"); underline.pack_forget()
+    if page_name == "focus":
+        populate_focus_page(1)
+    elif page_name == "exchange":
+        populate_rate_list()
+        update_alert_list_ui()
+
+def create_currency_frame(parent, tk_var):
+    frame = tk.Frame(parent, bg="white", highlightbackground="#E0E0E0", highlightthickness=1)
+    left_frame = tk.Frame(frame, bg="white", width=216, height=172); left_frame.pack_propagate(False); left_frame.pack(side="left", padx=14, pady=14)
+    left_frame.grid_rowconfigure(list(range(4)), weight=1); left_frame.grid_columnconfigure(0, weight=1)
+    flag_label = tk.Label(left_frame, bg="white"); flag_label.grid(row=0, column=0)
+    country_label = tk.Label(left_frame, text="", bg="white", font=("맑은 고딕", 16, "bold"), fg="black"); country_label.grid(row=1, column=0)
+    code_label = tk.Label(left_frame, text="", bg="white", font=("맑은 고딕", 14), fg="gray"); code_label.grid(row=2, column=0)
+    dropdown = tk.OptionMenu(left_frame, tk_var, *currency_codes); dropdown.config(bg="white", relief="flat", highlightthickness=0, width=5, borderwidth=0, indicatoron=True, font=("맑은 고딕", 10), fg="black"); dropdown.grid(row=3, column=0)
+    separator = tk.Frame(frame, bg="#E0E0E0", width=1); separator.pack(side="left", fill="y", pady=14)
+    right_frame = tk.Frame(frame, bg="white"); right_frame.pack(side="right", fill="both", expand=True, padx=14, pady=14)
+    return frame, {'flag': flag_label, 'country': country_label, 'code': code_label, 'right': right_frame}
+
+# --- 2. 전역 변수 및 데이터 정의 ---
+exchange_rates = {}; yesterday_exchange_rates = {}; currency_data = {
+    'USD': {'name': '미국', 'symbol': '달러', 'flag': 'image/us.png'}, 'KRW': {'name': '대한민국', 'symbol': '원', 'flag': 'image/kr.png'},
+    'JPY': {'name': '일본', 'symbol': '엔', 'flag': 'image/jp.png'}, 'EUR': {'name': '유로존', 'symbol': '유로', 'flag': 'image/eur.png'},
+    'CNY': {'name': '중국', 'symbol': '위안', 'flag': 'image/cn.png'}, 'GBP': {'name': '영국', 'symbol': '파운드', 'flag': 'image/gbp.png'},
+    'AUD': {'name': '호주', 'symbol': '달러', 'flag': 'image/aud.png'}, 'CAD': {'name': '캐나다', 'symbol': '달러', 'flag': 'image/cad.png'},
+    'CHF': {'name': '스위스', 'symbol': '프랑', 'flag': 'image/chf.png'}
+}; currency_codes = list(currency_data.keys()); graph_currency_codes = ['USD', 'JPY', 'EUR', 'CNY']; current_graph_index = 0; current_news_page = 1; total_news_pages = 1
+user_alerts = []
+ALERT_CHECK_INTERVAL = 600000
+
+# --- 3. GUI 창 설정 ---
+window = tk.Tk(); window.title("실시간 환율 정보"); window.geometry("1800x1200"); window.config(bg="white")
+
+# --- 4. 이미지 로드 ---
+tk_flag_images = {}
+for code, data in currency_data.items():
+    try:
+        img_converter = Image.open(data['flag']).resize((58, 37)); tk_flag_images[code] = ImageTk.PhotoImage(img_converter)
+        img_list = Image.open(data['flag']).resize((36, 24)); tk_flag_images[f"{code}_small"] = ImageTk.PhotoImage(img_list)
+    except FileNotFoundError: print(f"이미지 파일 없음: {data['flag']}")
+
+# --- 5. Tkinter 변수 선언 ---
+amount_var = tk.StringVar(window, value="1"); from_var = tk.StringVar(window, value='USD'); to_var = tk.StringVar(window, value='KRW')
+alert_currency_var = tk.StringVar(window, value='USD'); alert_op_var = tk.StringVar(window, value='>')
+
+# --- 6. 레이아웃 구조 생성 ---
+sidebar_container = tk.Frame(window); sidebar_container.pack(side="left", fill="y")
+sidebar_frame = tk.Frame(sidebar_container, bg="#F5F5F5", width=216); sidebar_frame.pack(side="left", fill="y"); sidebar_frame.pack_propagate(False)
+sidebar_separator = tk.Frame(sidebar_container, bg="#D0D0D0", width=1); sidebar_separator.pack(side="right", fill="y")
+content_frame = tk.Frame(window, bg="white"); content_frame.pack(side="right", fill="both", expand=True); content_frame.grid_rowconfigure(0, weight=1); content_frame.grid_columnconfigure(0, weight=1)
+
+# --- 7. 페이지 1: 환율 페이지 (3단 레이아웃) ---
+exchange_page = tk.Frame(content_frame, bg="white"); exchange_page.grid(row=0, column=0, sticky="nsew")
+left_panel = tk.Frame(exchange_page, bg="white"); left_panel.pack(side="left", fill="both", expand=True, padx=28, pady=28)
+alert_panel = tk.Frame(exchange_page, bg="white", width=400); alert_panel.pack(side="left", fill="y", pady=28); alert_panel.pack_propagate(False)
+right_panel = tk.Frame(exchange_page, bg="white", width=430); right_panel.pack(side="right", fill="y"); right_panel.pack_propagate(False)
+
+# 7-1. 왼쪽 패널 (변환기 + 그래프)
+converter_frame = tk.Frame(left_panel, bg="white"); converter_frame.pack(anchor="nw")
+from_frame, from_widgets = create_currency_frame(converter_frame, from_var); from_frame.pack(pady=(0, 14), fill="x")
+from_flag_label = from_widgets['flag']; from_country_label = from_widgets['country']; from_code_label = from_widgets['code']
+amount_entry = tk.Entry(from_widgets['right'], textvariable=amount_var, font=("맑은 고딕", 28, "bold"), justify="right", relief="flat", bg="white", fg="black", insertbackground="black"); amount_entry.pack(fill="x", expand=True)
+from_formatted_label = tk.Label(from_widgets['right'], text="", font=("맑은 고딕", 14), fg="gray", bg="white", anchor="e"); from_formatted_label.pack(fill="x")
+to_frame, to_widgets = create_currency_frame(converter_frame, to_var); to_frame.pack(pady=7, fill="x")
+to_flag_label = to_widgets['flag']; to_country_label = to_widgets['country']; to_code_label = to_widgets['code']
+to_amount_label = tk.Label(to_widgets['right'], text="", font=("맑은 고딕", 28, "bold"), bg="white", fg="black", anchor="e"); to_amount_label.pack(fill="x", expand=True)
+to_formatted_label = tk.Label(to_widgets['right'], text="", font=("맑은 고딕", 14), fg="gray", bg="white", anchor="e"); to_formatted_label.pack(fill="x")
+graph_container_frame = tk.Frame(left_panel, bg="white"); graph_container_frame.pack(anchor="nw", pady=(14, 0), fill="both", expand=True)
+prev_button = tk.Button(graph_container_frame, text="◀", font=("Arial", 16), relief="flat", bg="white", fg="black", command=show_prev_graph); prev_button.pack(side="left", fill="y")
+graph_content_frame = tk.Frame(graph_container_frame, bg="white"); graph_content_frame.pack(side="left", fill="both", expand=True)
+next_button = tk.Button(graph_container_frame, text="▶", font=("Arial", 16), relief="flat", bg="white", fg="black", command=show_next_graph); next_button.pack(side="right", fill="y")
+
+# 7-2. 가운데 패널 (환율 알림)
+tk.Label(alert_panel, text="환율 알림 설정", font=("맑은 고딕", 18, "bold"), bg="white", fg="black").pack(anchor="w", pady=(14,0), padx=10)
+tk.Frame(alert_panel, height=2, bg="#E0E0E0").pack(fill="x", pady=5, padx=10)
+alert_input_frame = tk.Frame(alert_panel, bg="white"); alert_input_frame.pack(fill="x", pady=5, padx=10)
+alert_currency_dropdown = tk.OptionMenu(alert_input_frame, alert_currency_var, *graph_currency_codes); alert_currency_dropdown.config(font=("맑은 고딕", 12), relief="flat", bg="#F0F0F0", fg="black"); alert_currency_dropdown.pack(side="left", padx=(0, 10))
+alert_op_menu = tk.OptionMenu(alert_input_frame, alert_op_var, ">", "<"); alert_op_menu.config(font=("맑은 고딕", 12), relief="flat", bg="#F0F0F0", fg="black"); alert_op_menu.pack(side="left", padx=5)
+alert_value_entry = tk.Entry(alert_input_frame, font=("맑은 고딕", 14), width=10, bg="white", fg="black", insertbackground="black"); alert_value_entry.pack(side="left", padx=5)
+tk.Label(alert_input_frame, text="원", font=("맑은 고딕", 12), bg="white", fg="black").pack(side="left", padx=5)
+tk.Button(alert_input_frame, text="추가", font=("맑은 고딕", 12, "bold"), bg="#0078D7", fg="white", relief="flat", command=add_alert).pack(side="left", padx=10)
+tk.Frame(alert_panel, height=2, bg="#E0E0E0").pack(fill="x", pady=(10,5), padx=10)
+tk.Label(alert_panel, text="현재 알림 목록", font=("맑은 고딕", 14, "bold"), bg="white", fg="black").pack(anchor="w", pady=5, padx=10)
+alert_list_frame = tk.Frame(alert_panel, bg="white"); alert_list_frame.pack(fill="both", expand=True, padx=10)
+
+# 7-3. 오른쪽 패널 (환율 시세표)
+tk.Label(right_panel, text="주요국 환율", font=("맑은 고딕", 18, "bold"), bg="white", fg="black").pack(pady=14, anchor="w", padx=14)
+tk.Frame(right_panel, height=2, bg="#E0E0E0").pack(fill="x")
+canvas = tk.Canvas(right_panel, bg="white", highlightthickness=0)
+scrollbar = tk.Scrollbar(right_panel, orient="vertical", command=canvas.yview)
+rate_list_scrollable_frame = tk.Frame(canvas, bg="white"); rate_list_scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+canvas.create_window((0, 0), window=rate_list_scrollable_frame, anchor="nw"); canvas.configure(yscrollcommand=scrollbar.set)
+canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
+
+# --- 8. 페이지 2: 환율 포커스 (뉴스 목록) ---
+focus_page = tk.Frame(content_frame, bg="white"); focus_page.grid(row=0, column=0, sticky="nsew")
+ai_summary_frame = tk.Frame(focus_page, bg="white"); ai_summary_frame.pack(side="top", fill="x", padx=28, pady=(28, 14))
+tk.Label(ai_summary_frame, text="AI 환율 동향 요약", font=("맑은 고딕", 18, "bold"), bg="white", fg="black").pack(anchor="w")
+tk.Frame(ai_summary_frame, height=2, bg="#E0E0E0").pack(fill="x", pady=5)
+ai_summary_label = tk.Label(ai_summary_frame, text="최신 뉴스를 불러와 AI가 요약 중입니다...", font=("맑은 고딕", 13), bg="white", fg="black", anchor="w", justify="left", wraplength=1000)
+ai_summary_label.pack(fill="x")
+total_news_frame = tk.Frame(focus_page, bg="white"); total_news_frame.pack(side="top", fill="x", padx=28, pady=(20, 5))
+total_count_label = tk.Label(total_news_frame, text="총 0 건", font=("맑은 고딕", 12), bg="white", fg="black", anchor="w"); total_count_label.pack(side="left")
+news_nav_frame = tk.Frame(focus_page, bg="white"); news_nav_frame.pack(side="bottom", fill="x", padx=28, pady=(0, 28))
+prev_news_button = tk.Button(news_nav_frame, text="◀ 이전 페이지", font=("맑은 고딕", 14), relief="flat", bg="white", fg="black", command=show_prev_news_page, state=tk.DISABLED); prev_news_button.pack(side="left")
+page_info_label = tk.Label(news_nav_frame, text="페이지 1 / 1", font=("맑은 고딕", 14), bg="white", fg="black"); page_info_label.pack(side="left", expand=True)
+next_news_button = tk.Button(news_nav_frame, text="다음 페이지 ▶", font=("맑은 고딕", 14), relief="flat", bg="white", fg="black", command=show_next_news_page, state=tk.DISABLED); next_news_button.pack(side="right")
+news_list_frame = tk.Frame(focus_page, bg="white"); news_list_frame.pack(side="top", fill="both", expand=True, padx=(28,0), pady=0)
+focus_canvas = tk.Canvas(news_list_frame, bg="white", highlightthickness=0)
+focus_scrollbar = tk.Scrollbar(news_list_frame, orient="vertical", command=focus_canvas.yview)
+focus_scrollable_frame = tk.Frame(focus_canvas, bg="white")
+focus_scrollable_frame.bind("<Configure>", lambda e: focus_canvas.configure(scrollregion=focus_canvas.bbox("all")))
+focus_canvas.create_window((0, 0), window=focus_scrollable_frame, anchor="nw"); focus_canvas.configure(yscrollcommand=focus_scrollbar.set)
+focus_canvas.pack(side="left", fill="both", expand=True); focus_scrollbar.pack(side="right", fill="y")
+
+# --- 9. 사이드바 메뉴 버튼 생성 ---
+menu_items = {}
+exchange_menu_item = tk.Frame(sidebar_frame, bg="#F5F5F5"); exchange_menu_item.pack(pady=(28, 7), padx=14, fill="x")
+btn_exchange = tk.Button(exchange_menu_item, text="환율", font=("맑은 고딕", 16, "bold"), relief="flat", bg="#F5F5F5", fg="black", activebackground="#E0E0E0", command=lambda: show_page("exchange")); btn_exchange.pack()
+underline_exchange = tk.Frame(exchange_menu_item, height=2, bg="black"); menu_items['exchange'] = {'button': btn_exchange, 'underline': underline_exchange, 'page': exchange_page}
+focus_menu_item = tk.Frame(sidebar_frame, bg="#F5F5F5"); focus_menu_item.pack(pady=7, padx=14, fill="x")
+btn_focus = tk.Button(focus_menu_item, text="환율 포커스", font=("맑은 고딕", 16, "bold"), relief="flat", bg="#F5F5F5", fg="black", activebackground="#E0E0E0", command=lambda: show_page("focus")); btn_focus.pack()
+underline_focus = tk.Frame(focus_menu_item, height=2, bg="black"); menu_items['focus'] = {'button': btn_focus, 'underline': underline_focus, 'page': focus_page}
+
+# --- 10. 프로그램 시작 ---
+amount_var.trace("w", update_conversion_display); from_var.trace("w", update_all_displays); to_var.trace("w", update_all_displays)
+show_page("exchange")
+periodic_update()
+window.mainloop()
