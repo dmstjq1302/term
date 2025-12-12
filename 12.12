@@ -132,7 +132,7 @@ def update_alert_list_ui():
                 alert_frame.pack(fill="x", pady=3, padx=5)
 
 def get_gemini_response(system_prompt, user_prompt):
-    api_key = "AIzaSyDnf4KQyYDdsmFoIakCoeupAFwErxB-Pek"
+    api_key = ""
 
     if not api_key or "여기에" in api_key: return "오류: API 키를 입력해주세요."
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key={api_key}"
